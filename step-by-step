@@ -1,0 +1,131 @@
+Here is the complete, step-by-step implementation guide to achieve your objective.
+By creating a two-interface setup on the FortiGate VM, you isolate the LAN traffic from the WAN traffic inside KVM. The Ubuntu host will handle both networks seamlessly over your single physical ens160 interface, and you will completely avoid the routing loops you encountered earlier.
+
+Step 1: Create the New WAN Network Configuration File
+
+First, create an XML configuration file for the new, dedicated WAN virtual network on the Ubuntu host.
+1. Open a new file in the terminal:bash
+sudo nano /tmp/fortigate-wan.xml
+Use code with caution.
+2. Paste the following configuration block into the file:xml
+<network>
+  <name>fgt-wan-net</name>
+  <forward mode='nat'/>
+  <bridge name='virbr1' stp='on' delay='0'/>
+  <ip address='192.168.150.1' netmask='255.255.255.0'>
+    <dhcp>
+      <range start='192.168.150.10' end='192.168.150.50'/>
+    </dhcp>
+  </ip>
+</network>
+Use code with caution.
+3. Save and close the file (Ctrl+O, Enter, then Ctrl+X).
+
+Step 2: Initialize and Start the WAN Network in KVM
+
+Load this XML configuration into Libvirt so KVM can build the virbr1 virtual switch interface.
+Run these commands in your Ubuntu terminal:
+bash
+sudo virsh net-define /tmp/fortigate-wan.xml
+sudo virsh net-start fgt-wan-net
+sudo virsh net-autostart fgt-wan-net
+Use code with caution.
+
+Step 3: Attach the New Network Interface to the FortiGate VM
+
+Now, plug a virtual cable from this new virbr1 network directly into your FortiGate virtual machine.
+Run this command (replace FortigateVM with your exact VM name if different):
+bash
+sudo virsh attach-interface --domain FortigateVM --type network --source fgt-wan-net --model virtio --config --live
+Use code with caution.
+
+Step 4: Reset and Clean the Routing Table Loop on Ubuntu
+
+Since your new network (virbr1) automatically manages NAT and outbound routing, you must remove the conflicting policy rules and manual iptables entries that caused the previous routing loops.
+Run these cleanup commands on the Ubuntu host terminal:
+bash
+# Remove the old interface-based policy routing rule
+sudo ip rule del iif virbr0 table fgt_internet 2>/dev/null
+
+# Clear out any custom forward rules we added manually to iptables
+sudo iptables -F FORWARD
+Use code with caution.
+
+Step 5: Configure the Ubuntu Host Netplan Profile Permanently
+
+Update your Netplan profile on the Ubuntu host so it cleanly holds the standard gateway configuration and maps the 1.1.1.1 target traffic straight down into the FortiGate's LAN port.
+1. Open your configuration file:bash
+sudo nano /etc/netplan/01-netcfg.yaml
+Use code with caution.
+2. Update the configuration to reflect a clean path:yaml
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    ens160:
+      dhcp4: false
+      addresses:
+        - 192.168.1.100/24
+      routes:
+        # Default internet path for the Ubuntu host itself
+        - to: default
+          via: 192.168.1.1
+        # Pure routing rule: Send the client's 1.1.1.1 traffic straight to FortiGate LAN
+        - to: 1.1.1.1/32
+          via: 192.168.122.71
+Use code with caution.
+3. Apply the updated settings:bash
+sudo netplan apply
+Use code with caution.
+
+Step 6: Configure Interfaces and Firewall Rules inside FortiGate
+
+Access your FortiGate CLI using sudo virsh console FortigateVM (or via its temporary web interface address at 192.168.122.71) to wire up the ports:
+1. Configure Port 1 (LAN Link):
+Ensure port1 stays statically bound to the virbr0 network:text
+config system interface
+    edit port1
+        set mode static
+        set ip 192.168.122.71 255.255.255.0
+        set allowaccess ping https ssh
+    next
+end
+Use code with caution.
+2. Configure Port 2 (WAN Link):
+Configure port2 (the new interface added in Step 3) to automatically fetch its IP and default internet gateway from Ubuntu's new virbr1 DHCP server:text
+config system interface
+    edit port2
+        set mode dhcp
+        set allowaccess ping
+    next
+end
+Use code with caution.
+3. Create the Outbound Firewall Policy:
+Tell the FortiGate to allow traffic arriving from your physical client on port1 to exit towards the internet on port2 with NAT enabled:text
+config firewall policy
+    edit 1
+        set name "LAN-to-Internet"
+        set srcintf "port1"
+        set dstintf "port2"
+        set srcaddr "all"
+        set dstaddr "all"
+        set action accept
+        set schedule "always"
+        set service "ALL"
+        set nat enable
+    next
+end
+Use code with caution.
+
+Step 7: Verify Everything works
+
+Go back to your client machine (192.168.1.10) and start your test ping to 1.1.1.1.
+Open your FortiGate sniffer console to observe the clean flow:
+text
+diagnose sniffer packet any "host 1.1.1.1" 4
+Use code with caution.
+What you will see now:
+• Packet enters port1 safely: 192.168.1.10 -> 1.1.1.1 (Clean source IP preserved).
+• Packet exits port2 safely: 192.168.150.x -> 1.1.1.1 (Handed over to Ubuntu for internet exit).
+• No more loops or port unreachable errors!
+Let me know if you run into any issues with Port 2 pulling its DHCP IP address or if the firewall policy needs further customization!
