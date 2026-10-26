@@ -1,0 +1,21 @@
+the following is sample curl command for gemini format with FortiAIgate 8.0.2
+
+curl -k -i -X POST \
+  "https://faig.dell.cbcgslb.fortiseahk.com:30443/ai/gemini/v1beta/models/gemini-gemini-3.6-flash:generateContent" \
+  -H "x-goog-api-key: YOUR_FORTIAIGATE_VIRTUAL_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "contents": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "Hello, what is your name?"
+          }
+        ]
+      }
+    ],
+    "generationConfig": {
+      "maxOutputTokens": 200
+    }
+  }'
